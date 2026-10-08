@@ -4,6 +4,7 @@ class_name InfiniteCanvas
 # -------------------------------------------------------------------------------------------------
 const BRUSH_STROKE = preload("res://BrushStroke/BrushStroke.tscn")
 const PLAYER = preload("res://Misc/Player/Player.tscn")
+const TOUCH_MOUSE_EMULATION_TOLERANCE := 24.0
 
 # -------------------------------------------------------------------------------------------------
 @onready var _brush_tool: BrushTool = $BrushTool
@@ -33,6 +34,9 @@ var _use_optimizer := true
 var _optimizer: BrushStrokeOptimizer
 var _player: Player = null
 var _player_enabled := false
+var _active_touch_positions := {} # touch index -> start and current positions
+var _suppress_touch_emulated_mouse := false
+var _touch_emulated_mouse_device := 0
 
 # -------------------------------------------------------------------------------------------------
 func _ready() -> void:
@@ -76,6 +80,7 @@ func _gui_input(event: InputEvent) -> void:
 
 # -------------------------------------------------------------------------------------------------
 func _process_event(event: InputEvent) -> void:
+	var suppress_tool_event := _update_touch_input_gate(event)
 	if event is InputEventMouseMotion:
 		info.current_pressure = event.pressure
 		if info.pen_inverted != event.pen_inverted:
@@ -100,8 +105,53 @@ func _process_event(event: InputEvent) -> void:
 	if !get_tree().root.get_viewport().is_input_handled():
 		_camera.tool_event(event)
 	if !get_tree().root.get_viewport().is_input_handled():
-		if _active_tool.enabled:
+		if _active_tool.enabled and !suppress_tool_event:
 			_active_tool.tool_event(event)
+
+func _update_touch_input_gate(event: InputEvent) -> bool:
+	if event is InputEventScreenTouch:
+		if event.pressed:
+			_active_touch_positions[event.index] = {
+				"start_position": event.position,
+				"current_position": event.position,
+			}
+		else:
+			_active_touch_positions.erase(event.index)
+		return true
+
+	if event is InputEventScreenDrag:
+		if _active_touch_positions.has(event.index):
+			var touch_positions: Dictionary = _active_touch_positions[event.index]
+			touch_positions["current_position"] = event.position
+			_active_touch_positions[event.index] = touch_positions
+		return true
+
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			if _is_mouse_position_near_active_touch(event.position):
+				_suppress_touch_emulated_mouse = true
+				_touch_emulated_mouse_device = event.device
+				return true
+			return _suppress_touch_emulated_mouse and event.device == _touch_emulated_mouse_device
+		elif _suppress_touch_emulated_mouse and event.device == _touch_emulated_mouse_device:
+			_suppress_touch_emulated_mouse = false
+			return true
+
+	if event is InputEventMouseMotion and _suppress_touch_emulated_mouse and event.device == _touch_emulated_mouse_device:
+		return true
+
+	return false
+
+func _is_mouse_position_near_active_touch(mouse_position: Vector2) -> bool:
+	var tolerance_squared := TOUCH_MOUSE_EMULATION_TOLERANCE * TOUCH_MOUSE_EMULATION_TOLERANCE
+	for touch_positions: Dictionary in _active_touch_positions.values():
+		var start_position: Vector2 = touch_positions["start_position"]
+		var current_position: Vector2 = touch_positions["current_position"]
+		if mouse_position.distance_squared_to(start_position) <= tolerance_squared:
+			return true
+		if mouse_position.distance_squared_to(current_position) <= tolerance_squared:
+			return true
+	return false
 
 # -------------------------------------------------------------------------------------------------
 func center_to_mouse() -> void:
